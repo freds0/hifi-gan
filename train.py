@@ -16,12 +16,12 @@ from env import AttrDict, build_env
 from meldataset import MelDataset, mel_spectrogram, get_dataset_filelist
 from models import Generator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
-from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
+from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint, set_init_dict
 
 torch.backends.cudnn.benchmark = True
 
 
-def train(rank, a, h):
+def train(rank, a, h, speaker_mapping=None):
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
                            world_size=h.dist_config['world_size'] * h.num_gpus, rank=rank)
@@ -43,10 +43,10 @@ def train(rank, a, h):
         cp_do = scan_checkpoint(a.checkpoint_path, 'do_')
 
     steps = 0
-    if cp_g is None or cp_do is None:
+    if cp_g is None and cp_do is None:
         state_dict_do = None
         last_epoch = -1
-    else:
+    elif cp_g is not None and cp_do is not None:
         state_dict_g = load_checkpoint(cp_g, device)
         state_dict_do = load_checkpoint(cp_do, device)
         generator.load_state_dict(state_dict_g['generator'])
@@ -54,6 +54,26 @@ def train(rank, a, h):
         msd.load_state_dict(state_dict_do['msd'])
         steps = state_dict_do['steps'] + 1
         last_epoch = state_dict_do['epoch']
+    elif cp_g is not None:
+        state_dict_g = load_checkpoint(cp_g, device)
+        try:
+            generator.load_state_dict(state_dict_g['generator'])
+        except:
+            print(" > Partial model initialization")
+            model_dict = generator.state_dict()
+            model_dict = set_init_dict(model_dict, state_dict_g['generator'])
+            generator.load_state_dict(model_dict)
+            del model_dict
+
+        state_dict_do = None
+        last_epoch = -1
+    elif cp_do is not None:
+        state_dict_do = load_checkpoint(cp_do, device)
+        mpd.load_state_dict(state_dict_do['mpd'])
+        msd.load_state_dict(state_dict_do['msd'])
+        steps = state_dict_do['steps'] + 1
+        last_epoch = state_dict_do['epoch']
+
 
     if h.num_gpus > 1:
         generator = DistributedDataParallel(generator, device_ids=[rank]).to(device)
@@ -76,7 +96,8 @@ def train(rank, a, h):
     trainset = MelDataset(training_filelist, h.segment_size, h.n_fft, h.num_mels,
                           h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, n_cache_reuse=0,
                           shuffle=False if h.num_gpus > 1 else True, fmax_loss=h.fmax_for_loss, device=device,
-                          fine_tuning=a.fine_tuning, base_mels_path=a.input_mels_dir)
+                          fine_tuning=a.fine_tuning, base_mels_path=a.input_mels_dir, use_speaker_embedding=h.use_speaker_embedding,
+                          speaker_mapping=speaker_mapping)
 
     train_sampler = DistributedSampler(trainset) if h.num_gpus > 1 else None
 
@@ -90,7 +111,9 @@ def train(rank, a, h):
         validset = MelDataset(validation_filelist, h.segment_size, h.n_fft, h.num_mels,
                               h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, False, False, n_cache_reuse=0,
                               fmax_loss=h.fmax_for_loss, device=device, fine_tuning=a.fine_tuning,
-                              base_mels_path=a.input_mels_dir)
+                              base_mels_path=a.input_mels_dir, use_speaker_embedding=h.use_speaker_embedding,
+                              speaker_mapping=speaker_mapping)
+
         validation_loader = DataLoader(validset, num_workers=1, shuffle=False,
                                        sampler=None,
                                        batch_size=1,
@@ -113,16 +136,19 @@ def train(rank, a, h):
         for i, batch in enumerate(train_loader):
             if rank == 0:
                 start_b = time.time()
-            x, y, _, mel_spec = batch
+            x, y, _, mel_spec, speaker_embedding = batch
             x = torch.autograd.Variable(x.to(device, non_blocking=True))
             y = torch.autograd.Variable(y.to(device, non_blocking=True))
             mel_spec = torch.autograd.Variable(mel_spec.to(device, non_blocking=True))
-            y = y.unsqueeze(1)
+            if speaker_embedding is not None:
+                speaker_embedding = torch.autograd.Variable(speaker_embedding.to(device, non_blocking=True))
 
-            y_g_hat = generator(x)
+            y = y.unsqueeze(1)
+            y_g_hat = generator(x, speaker_embedding)
+            
             y_mel = mel_spec
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
-                                          h.fmin, h.fmax_for_loss)
+                                          h.fmin, h.fmax_for_loss, center=False)
 
             optim_d.zero_grad()
 
@@ -190,8 +216,8 @@ def train(rank, a, h):
                     torch.cuda.empty_cache()
                     with torch.no_grad():
                         for i, batch in enumerate(validation_loader):
-                            x, y, _, _ = batch
-                            y_g_hat = generator(x.to(device))
+                            x, y, _, _, speaker_embedding = batch
+                            y_g_hat = generator(x.to(device), speaker_embedding.to(device))
 
                             if steps == 0:
                                 sw.add_audio('gt/y_{}'.format(i), y[0], steps, h.sampling_rate)
@@ -234,11 +260,19 @@ def main():
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--validation_interval', default=1000, type=int)
     parser.add_argument('--fine_tuning', default=False, type=bool)
+    parser.add_argument('--speakers_json', default=None, type=str)
+    
 
     a = parser.parse_args()
 
     with open(a.config) as f:
         data = f.read()
+    
+    if a.speakers_json:
+      with open(a.speakers_json) as f:
+            speaker_mapping = json.load(f)
+    else:
+        speaker_mapping = None
 
     json_config = json.loads(data)
     h = AttrDict(json_config)
@@ -254,9 +288,9 @@ def main():
         pass
 
     if h.num_gpus > 1:
-        mp.spawn(train, nprocs=h.num_gpus, args=(a, h,))
+        mp.spawn(train, nprocs=h.num_gpus, args=(a, h,speaker_mapping,))
     else:
-        train(0, a, h)
+        train(0, a, h, speaker_mapping)
 
 
 if __name__ == '__main__':

@@ -78,7 +78,12 @@ class Generator(torch.nn.Module):
         self.h = h
         self.num_kernels = len(h.resblock_kernel_sizes)
         self.num_upsamples = len(h.upsample_rates)
-        self.conv_pre = weight_norm(Conv1d(80, h.upsample_initial_channel, 7, 1, padding=3))
+
+        self.use_speaker_embedding = h.use_speaker_embedding
+
+        speaker_embedding_dim = h.speaker_embedding_dim if self.use_speaker_embedding else 0
+
+        self.conv_pre = weight_norm(Conv1d(80+speaker_embedding_dim, h.upsample_initial_channel, 7, 1, padding=3))
         resblock = ResBlock1 if h.resblock == '1' else ResBlock2
 
         self.ups = nn.ModuleList()
@@ -97,11 +102,18 @@ class Generator(torch.nn.Module):
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
 
-    def forward(self, x):
+    def forward(self, x, speaker_embedding=None):
+        if self.use_speaker_embedding:
+            speaker_embedding = torch.unsqueeze(speaker_embedding, -1)
+            speaker_embedding = speaker_embedding.repeat(1, 1, x.size(-1))
+            x = torch.cat([x, speaker_embedding], dim=1)
+
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, LRELU_SLOPE)
+
             x = self.ups[i](x)
+
             xs = None
             for j in range(self.num_kernels):
                 if xs is None:

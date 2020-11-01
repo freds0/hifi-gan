@@ -1,7 +1,7 @@
 {
     "resblock": "1",
     "num_gpus": 0,
-    "batch_size": 16,
+    "batch_size": 64,
     "learning_rate": 0.0002,
     "adam_b1": 0.8,
     "adam_b2": 0.99,
@@ -27,7 +27,10 @@
     "fmax": 8000,
     "fmax_for_loss": null,
 
-    "num_workers": 4,
+    "num_workers": 8,
+
+    "use_speaker_embedding": false,
+    "speaker_embedding_dim":256,
 
     "dist_config": {
         "dist_backend": "nccl",

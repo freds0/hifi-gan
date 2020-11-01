@@ -29,6 +29,9 @@
 
     "num_workers": 4,
 
+    "use_speaker_embedding": true,
+    "speaker_embedding_dim":256,
+    
     "dist_config": {
         "dist_backend": "nccl",
         "dist_url": "tcp://localhost:54321",

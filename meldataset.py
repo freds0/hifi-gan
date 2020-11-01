@@ -11,33 +11,6 @@ from librosa.filters import mel as librosa_mel_fn
 from mozilla_tts_audio import AudioProcessor
 import librosa
 
-
-
-ap = AudioProcessor(                 
-     sample_rate=22050,
-     num_mels=80,
-     min_level_db=-100,
-     frame_shift_ms=None,
-     frame_length_ms=None,
-     hop_length=256,
-     win_length=1024,
-     ref_level_db=20,
-     fft_size=1025,
-     power=1.5,
-     preemphasis=0.98,
-     signal_norm=True,
-     symmetric_norm=True,
-     max_norm=4.0,
-     mel_fmin=0.0,
-     mel_fmax=8000.0,
-     spec_gain=20.0,
-     stft_pad_mode="reflect",
-     clip_norm=True,
-     griffin_lim_iters=60,
-     do_trim_silence=False,
-     trim_db=60)
-
-
 def load_wav(full_path):
     sampling_rate, data = read(full_path)
     return data, sampling_rate
@@ -98,8 +71,6 @@ def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin,
     spec = torch.matmul(mel_basis[str(fmax)+'_'+str(y.device)], spec)
     spec = spectral_normalize_torch(spec)
 
-#    spec = np.float32(ap.melspectrogram(y.detach().cpu().numpy()))
-
     return spec
 
 
@@ -117,7 +88,7 @@ def get_dataset_filelist(a):
 class MelDataset(torch.utils.data.Dataset):
     def __init__(self, training_files, segment_size, n_fft, num_mels,
                  hop_size, win_size, sampling_rate,  fmin, fmax, split=True, shuffle=True, n_cache_reuse=1,
-                 device=None, fmax_loss=None, fine_tuning=False, base_mels_path=None):
+                 device=None, fmax_loss=None, fine_tuning=False, base_mels_path=None, use_speaker_embedding=False, speaker_mapping=None):
         self.audio_files = training_files
         random.seed(1234)
         if shuffle:
@@ -138,16 +109,51 @@ class MelDataset(torch.utils.data.Dataset):
         self.device = device
         self.fine_tuning = fine_tuning
         self.base_mels_path = base_mels_path
+        # speaker conditional
+        self.use_speaker_embedding = use_speaker_embedding
+        self.speaker_mapping = speaker_mapping
+
+        self.ap = AudioProcessor(                 
+                sample_rate=sampling_rate,
+                num_mels=num_mels,
+                hop_length=hop_size,
+                win_length=win_size,
+                mel_fmin=fmin,
+                mel_fmax=fmax,
+                fft_size=n_fft+1,
+                min_level_db=-100,
+                frame_shift_ms=None,
+                frame_length_ms=None,
+                ref_level_db=20,
+                power=1.5,
+                preemphasis=0.98,
+                signal_norm=True,
+                symmetric_norm=True,
+                max_norm=4.0,
+                spec_gain=20.0,
+                stft_pad_mode="reflect",
+                clip_norm=True,
+                griffin_lim_iters=60,
+                do_trim_silence=False,
+                trim_db=60)
+
+    def Mozilla_TTS_mel_spectrogram(self, audio):
+        audio = audio.squeeze(0)
+        mel = np.float32(self.ap.melspectrogram(audio.detach().cpu().numpy()))
+        mel = torch.from_numpy(mel)
+        mel = mel.unsqueeze(0)
+        audio = audio.unsqueeze(0)
+        return mel
+
 
     def __getitem__(self, index):
         filename = self.audio_files[index]
         if self._cache_ref_count == 0:
-#            audio, sampling_rate = load_wav(filename)
-#            audio = audio / 32767.5
-            audio, sampling_rate = T.load_wav(filename)
+            audio, sampling_rate = load_wav(filename)
+            audio = audio / 32767.5
+
             if not self.fine_tuning:
-#                audio = normalize(audio) * 0.95
-                audio = torch.clamp(audio[0] / 32767.5, -1.0, 1.0)
+                audio = normalize(audio) * 0.95
             self.cached_wav = audio
             if sampling_rate != self.sampling_rate:
                 raise ValueError("{} SR doesn't match target {} SR".format(
@@ -169,14 +175,15 @@ class MelDataset(torch.utils.data.Dataset):
                 else:
                   audio = torch.nn.functional.pad(audio, (0, self.segment_size - audio.size(1)), 'constant')
 
-            audio = audio.squeeze(0)
-            mel = np.float32(ap.melspectrogram(audio.detach().cpu().numpy()))
-            mel = torch.from_numpy(mel)
-            mel = mel.unsqueeze(0)
+            mel = self.Mozilla_TTS_mel_spectrogram(audio)
         else:
             mel = np.load(
                 os.path.join(self.base_mels_path, os.path.splitext(os.path.split(filename)[-1])[0] + '.npy'))
+
             mel = torch.from_numpy(mel)
+
+            if len(mel.shape) < 3:
+                mel = mel.unsqueeze(0)
 
             if self.split:
                 frames_per_seg = math.ceil(self.segment_size / self.hop_size)
@@ -189,12 +196,16 @@ class MelDataset(torch.utils.data.Dataset):
                     mel = torch.nn.functional.pad(mel, (0, frames_per_seg - mel.size(2)), 'constant')
                     audio = torch.nn.functional.pad(audio, (0, self.segment_size - audio.size(1)), 'constant')
 
-        audio = audio.unsqueeze(0)
         mel_loss = mel_spectrogram(audio, self.n_fft, self.num_mels,
                                    self.sampling_rate, self.hop_size, self.win_size, self.fmin, self.fmax_loss,
                                    center=False)
+        if self.use_speaker_embedding:
+            speaker_embedding = self.speaker_mapping[os.path.basename(filename)]['embedding']
+            speaker_embedding = torch.FloatTensor(speaker_embedding)
+        else:
+            speaker_embedding = torch.tensor([]) # empty tensor
 
-        return (mel.squeeze(), audio.squeeze(0), filename, mel_loss.squeeze())
+        return (mel.squeeze(), audio.squeeze(0), filename, mel_loss.squeeze(), speaker_embedding)
 
     def __len__(self):
         return len(self.audio_files)
