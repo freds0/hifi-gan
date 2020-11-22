@@ -8,12 +8,61 @@ from utils import init_weights, get_padding
 LRELU_SLOPE = 0.1
 
 
-class ResBlock1(torch.nn.Module):
-    def __init__(self, h, channels, kernel_size=3, dilation=(1, 3, 5)):
+class ResBlock1_all_embedding(torch.nn.Module):
+    def __init__(self, h, channels, kernel_size=3, dilation=(1, 3, 5), speaker_embedding_dim=0):
         super(ResBlock1, self).__init__()
         self.h = h
+        self.block_channels = channels
         self.convs1 = nn.ModuleList([
-            weight_norm(Conv1d(channels, channels, kernel_size, 1, dilation=dilation[0],
+            weight_norm(Conv1d(channels+speaker_embedding_dim, channels, kernel_size, 1, dilation=dilation[0],
+                               padding=get_padding(kernel_size, dilation[0]))),
+            weight_norm(Conv1d(channels+speaker_embedding_dim, channels, kernel_size, 1, dilation=dilation[1],
+                               padding=get_padding(kernel_size, dilation[1]))),
+            weight_norm(Conv1d(channels+speaker_embedding_dim, channels, kernel_size, 1, dilation=dilation[2],
+                               padding=get_padding(kernel_size, dilation[2])))
+        ])
+        self.convs1.apply(init_weights)
+
+        self.convs2 = nn.ModuleList([
+            weight_norm(Conv1d(channels+speaker_embedding_dim, channels, kernel_size, 1, dilation=1,
+                               padding=get_padding(kernel_size, 1))),
+            weight_norm(Conv1d(channels+speaker_embedding_dim, channels, kernel_size, 1, dilation=1,
+                               padding=get_padding(kernel_size, 1))),
+            weight_norm(Conv1d(channels+speaker_embedding_dim, channels, kernel_size, 1, dilation=1,
+                               padding=get_padding(kernel_size, 1)))
+        ])
+        self.convs2.apply(init_weights)
+
+    def forward(self, x, speaker_embedding=None):
+        if speaker_embedding is not None:
+            speaker_embedding = speaker_embedding.repeat(1, 1, x.size(-1))
+
+        for c1, c2 in zip(self.convs1, self.convs2):
+            xt = F.leaky_relu(x, LRELU_SLOPE)
+            if speaker_embedding is not None:
+                xt = torch.cat([xt, speaker_embedding], dim=1)
+            xt = c1(xt)
+            xt = F.leaky_relu(xt, LRELU_SLOPE)
+            if speaker_embedding is not None:
+                xt = torch.cat([xt, speaker_embedding], dim=1)
+            xt = c2(xt)
+            x = xt + x
+        return x
+
+    def remove_weight_norm(self):
+        for l in self.convs1:
+            remove_weight_norm(l)
+        for l in self.convs2:
+            remove_weight_norm(l)
+
+
+class ResBlock1(torch.nn.Module):
+    def __init__(self, h, channels, kernel_size=3, dilation=(1, 3, 5), speaker_embedding_dim=0):
+        super(ResBlock1, self).__init__()
+        self.h = h
+        self.block_channels = channels
+        self.convs1 = nn.ModuleList([
+            weight_norm(Conv1d(channels+speaker_embedding_dim, channels, kernel_size, 1, dilation=dilation[0],
                                padding=get_padding(kernel_size, dilation[0]))),
             weight_norm(Conv1d(channels, channels, kernel_size, 1, dilation=dilation[1],
                                padding=get_padding(kernel_size, dilation[1]))),
@@ -32,8 +81,19 @@ class ResBlock1(torch.nn.Module):
         ])
         self.convs2.apply(init_weights)
 
-    def forward(self, x):
-        for c1, c2 in zip(self.convs1, self.convs2):
+    def forward(self, x, speaker_embedding=None):
+        # first step for add speaker embedding
+        xt = F.leaky_relu(x, LRELU_SLOPE)
+        if speaker_embedding is not None:
+            speaker_embedding = speaker_embedding.repeat(1, 1, x.size(-1))
+            xt = torch.cat([xt, speaker_embedding], dim=1)
+
+        xt = self.convs1[0](xt)
+        xt = F.leaky_relu(xt, LRELU_SLOPE)
+        xt = self.convs2[0](xt)
+        x = xt + x
+
+        for c1, c2 in zip(self.convs1[1:], self.convs2[1:]):
             xt = F.leaky_relu(x, LRELU_SLOPE)
             xt = c1(xt)
             xt = F.leaky_relu(xt, LRELU_SLOPE)
@@ -46,7 +106,6 @@ class ResBlock1(torch.nn.Module):
             remove_weight_norm(l)
         for l in self.convs2:
             remove_weight_norm(l)
-
 
 class ResBlock2(torch.nn.Module):
     def __init__(self, h, channels, kernel_size=3, dilation=(1, 3)):
@@ -83,7 +142,7 @@ class Generator(torch.nn.Module):
 
         speaker_embedding_dim = h.speaker_embedding_dim if self.use_speaker_embedding else 0
 
-        self.conv_pre = weight_norm(Conv1d(80+speaker_embedding_dim, h.upsample_initial_channel, 7, 1, padding=3))
+        self.conv_pre = weight_norm(Conv1d(80, h.upsample_initial_channel, 7, 1, padding=3))
         resblock = ResBlock1 if h.resblock == '1' else ResBlock2
 
         self.ups = nn.ModuleList()
@@ -96,30 +155,26 @@ class Generator(torch.nn.Module):
         for i in range(len(self.ups)):
             ch = h.upsample_initial_channel//(2**(i+1))
             for j, (k, d) in enumerate(zip(h.resblock_kernel_sizes, h.resblock_dilation_sizes)):
-                self.resblocks.append(resblock(h, ch, k, d))
+                self.resblocks.append(resblock(h, ch, k, d, speaker_embedding_dim))
 
         self.conv_post = weight_norm(Conv1d(ch, 1, 7, 1, padding=3))
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
 
     def forward(self, x, speaker_embedding=None):
-        if self.use_speaker_embedding:
+        if speaker_embedding is not None:
             speaker_embedding = torch.unsqueeze(speaker_embedding, -1)
-            speaker_embedding = speaker_embedding.repeat(1, 1, x.size(-1))
-            x = torch.cat([x, speaker_embedding], dim=1)
 
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, LRELU_SLOPE)
-
             x = self.ups[i](x)
-
             xs = None
             for j in range(self.num_kernels):
                 if xs is None:
-                    xs = self.resblocks[i*self.num_kernels+j](x)
+                    xs = self.resblocks[i*self.num_kernels+j](x, speaker_embedding)
                 else:
-                    xs += self.resblocks[i*self.num_kernels+j](x)
+                    xs += self.resblocks[i*self.num_kernels+j](x, speaker_embedding)
             x = xs / self.num_kernels
         x = F.leaky_relu(x)
         x = self.conv_post(x)

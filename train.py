@@ -7,6 +7,7 @@ import argparse
 import json
 import torch
 import torch.nn.functional as F
+from shutil import copyfile
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DistributedSampler, DataLoader
 import torch.multiprocessing as mp
@@ -43,13 +44,23 @@ def train(rank, a, h, speaker_mapping=None):
         cp_do = scan_checkpoint(a.checkpoint_path, 'do_')
 
     steps = 0
+    change_gen = False
     if cp_g is None and cp_do is None:
         state_dict_do = None
         last_epoch = -1
     elif cp_g is not None and cp_do is not None:
         state_dict_g = load_checkpoint(cp_g, device)
         state_dict_do = load_checkpoint(cp_do, device)
-        generator.load_state_dict(state_dict_g['generator'])
+        try:
+            generator.load_state_dict(state_dict_g['generator'])
+        except:
+            print(" > Partial model initialization")
+            model_dict = generator.state_dict()
+            model_dict = set_init_dict(model_dict, state_dict_g['generator'])
+            generator.load_state_dict(model_dict)
+            del model_dict
+            change_gen = True
+
         mpd.load_state_dict(state_dict_do['mpd'])
         msd.load_state_dict(state_dict_do['msd'])
         steps = state_dict_do['steps'] + 1
@@ -64,6 +75,7 @@ def train(rank, a, h, speaker_mapping=None):
             model_dict = set_init_dict(model_dict, state_dict_g['generator'])
             generator.load_state_dict(model_dict)
             del model_dict
+            change_gen = True
 
         state_dict_do = None
         last_epoch = -1
@@ -85,9 +97,11 @@ def train(rank, a, h, speaker_mapping=None):
                                 h.learning_rate, betas=[h.adam_b1, h.adam_b2])
 
     if state_dict_do is not None:
-        optim_g.load_state_dict(state_dict_do['optim_g'])
-        optim_d.load_state_dict(state_dict_do['optim_d'])
-
+        if not change_gen:
+            optim_g.load_state_dict(state_dict_do['optim_g'])
+            optim_d.load_state_dict(state_dict_do['optim_d'])
+        else:
+            last_epoch = -1
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
 
@@ -217,7 +231,9 @@ def train(rank, a, h, speaker_mapping=None):
                     with torch.no_grad():
                         for i, batch in enumerate(validation_loader):
                             x, y, _, _, speaker_embedding = batch
-                            y_g_hat = generator(x.to(device), speaker_embedding.to(device))
+                            if speaker_embedding is not None:
+                                speaker_embedding = speaker_embedding.to(device)        
+                            y_g_hat = generator(x.to(device), speaker_embedding)
 
                             if steps == 0:
                                 sw.add_audio('gt/y_{}'.format(i), y[0], steps, h.sampling_rate)
@@ -277,6 +293,9 @@ def main():
     json_config = json.loads(data)
     h = AttrDict(json_config)
     build_env(a.config, 'config.json', a.checkpoint_path)
+    # copy speakers json
+    if speaker_mapping and h.use_speaker_embedding:
+        copyfile(a.speakers_json, os.path.join(a.checkpoint_path, 'speakers.json'))
 
     torch.manual_seed(h.seed)
     if torch.cuda.is_available():

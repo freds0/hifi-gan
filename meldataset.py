@@ -180,7 +180,7 @@ class MelDataset(torch.utils.data.Dataset):
             mel = np.load(
                 os.path.join(self.base_mels_path, os.path.splitext(os.path.split(filename)[-1])[0] + '.npy'))
 
-            mel = torch.from_numpy(mel)
+            mel = torch.from_numpy(mel).T
 
             if len(mel.shape) < 3:
                 mel = mel.unsqueeze(0)
