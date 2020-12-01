@@ -21,7 +21,50 @@ from utils import plot_spectrogram, load_checkpoint, save_checkpoint, set_init_d
 import glob
 
 torch.backends.cudnn.benchmark = True
+import librosa
+import numpy as np
 
+import os
+import sys
+
+
+TTS_PATH = "../glowtts/TTS-dev/"
+sys.path.append(TTS_PATH) 
+from TTS.tts.utils.speakers import save_speaker_mapping, load_speaker_mapping
+from TTS.utils.audio import AudioProcessor
+from TTS.utils.io import load_config
+from TTS.speaker_encoder.model import SpeakerEncoder
+
+
+USE_CUDA = True
+
+MODEL_RUN_PATH = "../glowtts/checkpoint-SpeakerEncoder/"
+MODEL_PATH_SE = MODEL_RUN_PATH + "320k.pth.tar"
+CONFIG_PATH_SE = MODEL_RUN_PATH + "config.json"
+
+
+c_se = load_config(CONFIG_PATH_SE)
+
+se_ap = AudioProcessor(**c_se['audio'])
+
+se_model = SpeakerEncoder(**c_se.model)
+se_model.load_state_dict(torch.load(MODEL_PATH_SE, map_location=torch.device('cpu'))['model'])
+se_model.eval()
+if USE_CUDA:
+    se_model.cuda()
+
+def calc_emb(y):
+  y_16 = librosa.resample(y, 22050, se_ap.sample_rate)
+  #y_16, sr = librosa.load(wav_file, sr=se_ap.sample_rate)
+  mel_spec = se_ap.melspectrogram(y_16)
+  mel_spec = torch.FloatTensor(mel_spec[None, :, :]).transpose(1, 2)
+  # print(mel_spec.shape)
+  if USE_CUDA:
+      mel_spec = mel_spec.cuda()
+  return se_model.compute_embedding(mel_spec).cpu().detach().numpy().reshape(-1)
+
+def cosine_similarity(x, y):
+    return np.dot(x, y) / (np.sqrt(np.dot(x, x)) * np.sqrt(np.dot(y, y)))
 
 def train(rank, a, h, speaker_mapping=None):
     torch.cuda.manual_seed(h.seed)
@@ -46,24 +89,16 @@ def train(rank, a, h, speaker_mapping=None):
                               batch_size=a.batch_size,
                               pin_memory=True,
                               drop_last=True)
-    min_loss = 99999999999999
+    min_loss = 0
     best_checkpoint = ''
     # list all checkpoints
     cp_list = glob.glob(os.path.join(a.checkpoint_path, 'g_*'))
 
     for checkpoint_g in cp_list:
         generator = Generator(h).to(device)
-        mpd = MultiPeriodDiscriminator().to(device)
-        msd = MultiScaleDiscriminator().to(device)
-        state_dict_do = load_checkpoint(checkpoint_g.replace('g_','do_'), device)
-        mpd.load_state_dict(state_dict_do['mpd'])
-        msd.load_state_dict(state_dict_do['msd'])
-
         state_dict_g = load_checkpoint(checkpoint_g, device)
         generator.load_state_dict(state_dict_g['generator'])
         generator.eval()
-        msd.eval()
-        mpd.eval()
 
         total_checkpoint_loss = 0
 
@@ -76,31 +111,19 @@ def train(rank, a, h, speaker_mapping=None):
 
                 y = y.unsqueeze(1).to(device)
                 y_g_hat = generator(x.to(device), speaker_embedding)
-                # print(y_g_hat.shape, y.shape)
-                y_mel =  mel_spectrogram(y.squeeze(1).to(device), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
-                                h.fmin, h.fmax_for_loss, center=False)
-                
-                
-                y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
-                                h.fmin, h.fmax_for_loss, center=False)
+                speaker_embedding = speaker_embedding.cpu().numpy()
+                # print(speaker_embedding.size(1))
+                y_g_hat = y_g_hat.cpu().numpy()
+                for j in range(len(y_g_hat)):
+                    emb = calc_emb(y_g_hat[j].reshape(-1))
+                    if speaker_embedding is None or speaker_embedding.shape[-1] == 0:
+                        emb2 = calc_emb(y[j].reshape(-1))
+                    else:
+                        emb2 = speaker_embedding[j]
+                    total_checkpoint_loss += cosine_similarity(emb, emb2)
 
-                # L1 Mel-Spectrogram Loss
-                loss_mel = F.l1_loss(y_mel, y_g_hat_mel)
-                
-                y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
-                y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = msd(y, y_g_hat)
-                loss_fm_f = feature_loss(fmap_f_r, fmap_f_g)
-                loss_fm_s = feature_loss(fmap_s_r, fmap_s_g)
-                loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
-                loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
-                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
-
-
-                total_checkpoint_loss += loss_gen_all.item()
-
-            
-        print("Checkpoint", checkpoint_g, "L1 Loss:", total_checkpoint_loss)
-        if total_checkpoint_loss < min_loss:
+        print("Checkpoint", checkpoint_g, "L1 Loss:", total_checkpoint_loss/len(validset))
+        if total_checkpoint_loss > min_loss:
             min_loss = total_checkpoint_loss
             best_checkpoint = checkpoint_g
         

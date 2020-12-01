@@ -4,5 +4,5 @@ CUDA_VISIBLE_DEVICES=0 python train.py --input_wavs_dir ../../datasets/VCTK-Corp
 
 
 
-CUDA_VISIBLE_DEVICES=0 python3 get-bestcheckpoint.py --input_wavs_dir ../../datasets/VCTK-Corpus-removed-silence/    --input_validation_file ../../datasets/VCTK-Corpus-removed-silence/val_hifi-vctk-clean.txt --config config_v2.json    --checkpoints_path ../HiFi-Gan-checkpoints/not-emb/Finetuning/VCTK/Transformer --fine_tuning True --input_mels_dir ../hifi-Gan-data/VCTK-GlowTTS-Transformer-encoder-without-noise-scale/
+#CUDA_VISIBLE_DEVICES=0 python3 get-bestcheckpoint.py --input_wavs_dir ../../datasets/VCTK-Corpus-removed-silence/    --input_validation_file ../../datasets/VCTK-Corpus-removed-silence/val_hifi-vctk-clean.txt --config config_v2.json    --checkpoints_path ../HiFi-Gan-checkpoints/not-emb/Finetuning/VCTK/Transformer --fine_tuning True --input_mels_dir ../hifi-Gan-data/VCTK-GlowTTS-Transformer-encoder-without-noise-scale/
 

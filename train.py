@@ -156,7 +156,7 @@ def train(rank, a, h, speaker_mapping=None):
             mel_spec = torch.autograd.Variable(mel_spec.to(device, non_blocking=True))
             if speaker_embedding is not None:
                 speaker_embedding = torch.autograd.Variable(speaker_embedding.to(device, non_blocking=True))
-
+            print(speaker_embedding.shape)
             y = y.unsqueeze(1)
             y_g_hat = generator(x, speaker_embedding)
             
