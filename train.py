@@ -17,6 +17,7 @@ from meldataset import MelDataset, mel_spectrogram, get_dataset_filelist
 from models import Generator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
+import torchaudio
 
 torch.backends.cudnn.benchmark = True
 
@@ -74,7 +75,7 @@ def train(rank, a, h):
     training_filelist, validation_filelist = get_dataset_filelist(a)
 
     trainset = MelDataset(training_filelist, h.segment_size, h.n_fft, h.num_mels,
-                          h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, n_cache_reuse=0,
+                          h.hop_size, h.win_size, h.VOC_sampling_rate, h.TTS_sampling_rate, h.fmin, h.fmax, n_cache_reuse=0,
                           shuffle=False if h.num_gpus > 1 else True, fmax_loss=h.fmax_for_loss, device=device,
                           fine_tuning=a.fine_tuning, base_mels_path=a.input_mels_dir)
 
@@ -88,7 +89,7 @@ def train(rank, a, h):
 
     if rank == 0:
         validset = MelDataset(validation_filelist, h.segment_size, h.n_fft, h.num_mels,
-                              h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, False, False, n_cache_reuse=0,
+                              h.hop_size, h.win_size, h.VOC_sampling_rate, h.TTS_sampling_rate, h.fmin, h.fmax, False, False, n_cache_reuse=0,
                               fmax_loss=h.fmax_for_loss, device=device, fine_tuning=a.fine_tuning,
                               base_mels_path=a.input_mels_dir)
         validation_loader = DataLoader(validset, num_workers=1, shuffle=False,
@@ -120,7 +121,7 @@ def train(rank, a, h):
             y = y.unsqueeze(1)
 
             y_g_hat = generator(x)
-            y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
+            y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.VOC_sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)
 
             optim_d.zero_grad()
@@ -191,21 +192,23 @@ def train(rank, a, h):
                     with torch.no_grad():
                         for j, batch in enumerate(validation_loader):
                             x, y, _, y_mel = batch
+                            
                             y_g_hat = generator(x.to(device))
                             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
-                            y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate,
+                            y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.VOC_sampling_rate,
                                                           h.hop_size, h.win_size,
                                                           h.fmin, h.fmax_for_loss)
-                            val_err_tot += F.l1_loss(y_mel, y_g_hat_mel).item()
+                            # print(y_mel.shape, y_g_hat_mel.shape, y_g_hat.shape, y.shape)
+                            val_err_tot += F.l1_loss(y_mel[:, :, :y_g_hat_mel.size(2)], y_g_hat_mel).item()
 
                             if j <= 4:
                                 if steps == 0:
-                                    sw.add_audio('gt/y_{}'.format(j), y[0], steps, h.sampling_rate)
+                                    sw.add_audio('gt/y_{}'.format(j), y[0], steps, h.VOC_sampling_rate)
                                     sw.add_figure('gt/y_spec_{}'.format(j), plot_spectrogram(x[0]), steps)
 
-                                sw.add_audio('generated/y_hat_{}'.format(j), y_g_hat[0], steps, h.sampling_rate)
+                                sw.add_audio('generated/y_hat_{}'.format(j), y_g_hat[0], steps, h.VOC_sampling_rate)
                                 y_hat_spec = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels,
-                                                             h.sampling_rate, h.hop_size, h.win_size,
+                                                             h.VOC_sampling_rate, h.hop_size, h.win_size,
                                                              h.fmin, h.fmax)
                                 sw.add_figure('generated/y_hat_spec_{}'.format(j),
                                               plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)

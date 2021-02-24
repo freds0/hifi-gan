@@ -23,7 +23,7 @@ def load_checkpoint(filepath, device):
 
 
 def get_mel(x):
-    return mel_spectrogram(x, h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax)
+    return mel_spectrogram(x, h.n_fft, h.num_mels, h.VOC_sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax)
 
 
 def scan_checkpoint(cp_dir, prefix):
@@ -58,7 +58,7 @@ def inference(a):
             audio = audio.cpu().numpy().astype('int16')
 
             output_file = os.path.join(a.output_dir, os.path.splitext(filname)[0] + '_generated.wav')
-            write(output_file, h.sampling_rate, audio)
+            write(output_file, h.VOC_sampling_rate, audio)
             print(output_file)
 
 
