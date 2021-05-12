@@ -22,6 +22,45 @@ import torchaudio
 torch.backends.cudnn.benchmark = True
 
 
+def validation(generator, validation_loader, sw, h, steps, device, first=False):
+    generator.eval()
+    torch.cuda.empty_cache()
+    val_err_tot = 0
+    with torch.no_grad():
+        for j, batch in enumerate(validation_loader):
+            x, y, _, y_mel = batch
+            
+            y_g_hat = generator(x.to(device))
+            y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
+            y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.VOC_sampling_rate,
+                                            h.hop_size, h.win_size,
+                                            h.fmin, h.fmax_for_loss)
+            # print(y_mel.shape, y_g_hat_mel.shape)
+            if y_g_hat_mel.size(2) > y_mel.size(2):
+                y_g_hat_mel = y_g_hat_mel[:, :, :y_mel.size(2)]
+            else:
+                y_mel = y_mel[:, :, :y_g_hat_mel.size(2)]
+
+            val_err_tot += F.l1_loss(y_mel, y_g_hat_mel).item()
+
+            if j <= 4:
+                if steps == 0 or first:
+                    sw.add_audio('gt/y_{}'.format(j), y[0], steps, h.VOC_sampling_rate)
+                    sw.add_figure('gt/y_spec_{}'.format(j), plot_spectrogram(x[0]), steps)
+
+                sw.add_audio('generated/y_hat_{}'.format(j), y_g_hat[0], steps, h.VOC_sampling_rate)
+                y_hat_spec = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels,
+                                                h.VOC_sampling_rate, h.hop_size, h.win_size,
+                                                h.fmin, h.fmax)
+                sw.add_figure('generated/y_hat_spec_{}'.format(j),
+                                plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
+
+        val_err = val_err_tot / (j+1)
+        sw.add_scalar("validation/mel_spec_error", val_err, steps)
+
+    generator.train()
+
+
 def train(rank, a, h):
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
@@ -99,10 +138,13 @@ def train(rank, a, h):
                                        drop_last=True)
 
         sw = SummaryWriter(os.path.join(a.checkpoint_path, 'logs'))
+    # first validation when start the train
+    validation(generator, validation_loader, sw, h, steps, device, first=True)
 
     generator.train()
     mpd.train()
     msd.train()
+    
     for epoch in range(max(0, last_epoch), a.training_epochs):
         if rank == 0:
             start = time.time()
@@ -110,7 +152,8 @@ def train(rank, a, h):
 
         if h.num_gpus > 1:
             train_sampler.set_epoch(epoch)
-
+        
+        
         for i, batch in enumerate(train_loader):
             if rank == 0:
                 start_b = time.time()
@@ -141,7 +184,6 @@ def train(rank, a, h):
 
             # Generator
             optim_g.zero_grad()
-
             # L1 Mel-Spectrogram Loss
             loss_mel = F.l1_loss(y_mel, y_g_hat_mel) * 45
 
@@ -186,38 +228,10 @@ def train(rank, a, h):
 
                 # Validation
                 if steps % a.validation_interval == 0:  # and steps != 0:
-                    generator.eval()
-                    torch.cuda.empty_cache()
-                    val_err_tot = 0
-                    with torch.no_grad():
-                        for j, batch in enumerate(validation_loader):
-                            x, y, _, y_mel = batch
-                            
-                            y_g_hat = generator(x.to(device))
-                            y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
-                            y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.VOC_sampling_rate,
-                                                          h.hop_size, h.win_size,
-                                                          h.fmin, h.fmax_for_loss)
-                            # print(y_mel.shape, y_g_hat_mel.shape, y_g_hat.shape, y.shape)
-                            val_err_tot += F.l1_loss(y_mel[:, :, :y_g_hat_mel.size(2)], y_g_hat_mel).item()
-
-                            if j <= 4:
-                                if steps == 0:
-                                    sw.add_audio('gt/y_{}'.format(j), y[0], steps, h.VOC_sampling_rate)
-                                    sw.add_figure('gt/y_spec_{}'.format(j), plot_spectrogram(x[0]), steps)
-
-                                sw.add_audio('generated/y_hat_{}'.format(j), y_g_hat[0], steps, h.VOC_sampling_rate)
-                                y_hat_spec = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels,
-                                                             h.VOC_sampling_rate, h.hop_size, h.win_size,
-                                                             h.fmin, h.fmax)
-                                sw.add_figure('generated/y_hat_spec_{}'.format(j),
-                                              plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
-
-                        val_err = val_err_tot / (j+1)
-                        sw.add_scalar("validation/mel_spec_error", val_err, steps)
-
+                    
+                    validation(generator, validation_loader, sw, h, steps, device)
                     generator.train()
-
+                    
             steps += 1
 
         scheduler_g.step()
@@ -239,7 +253,7 @@ def main():
     parser.add_argument('--input_validation_file', default='LJSpeech-1.1/validation.txt')
     parser.add_argument('--checkpoint_path', default='cp_hifigan')
     parser.add_argument('--config', default='')
-    parser.add_argument('--training_epochs', default=3100, type=int)
+    parser.add_argument('--training_epochs', default=9000, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--checkpoint_interval', default=5000, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)

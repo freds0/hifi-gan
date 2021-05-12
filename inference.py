@@ -5,6 +5,7 @@ import os
 import argparse
 import json
 import torch
+import torchaudio
 from scipy.io.wavfile import write
 from env import AttrDict
 from meldataset import mel_spectrogram, MAX_WAV_VALUE, load_wav
@@ -22,8 +23,21 @@ def load_checkpoint(filepath, device):
     return checkpoint_dict
 
 
-def get_mel(x):
-    return mel_spectrogram(x, h.n_fft, h.num_mels, h.VOC_sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax)
+def get_mel(x, sr=None):
+    
+    
+    if h.VOC_sampling_rate != h.TTS_sampling_rate:
+        if sr != h.TTS_sampling_rate:
+            audio_resample = torchaudio.transforms.Resample(orig_freq=sr, new_freq=h.TTS_sampling_rate, resampling_method='sinc_interpolation')
+            x = audio_resample(x)
+        mel = mel_spectrogram(x, h.n_fft, h.num_mels, h.TTS_sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax)
+        mel = torch.nn.functional.interpolate(mel.unsqueeze(0), scale_factor=(1, int(h.VOC_sampling_rate/h.TTS_sampling_rate)), mode='bilinear', align_corners=True).squeeze(0)
+    else:
+        if sr != h.VOC_sampling_rate:
+            audio_resample = torchaudio.transforms.Resample(orig_freq=sr, new_freq=h.VOC_sampling_rate, resampling_method='sinc_interpolation')
+            x = audio_resample(x)
+        mel = mel_spectrogram(x, h.n_fft, h.num_mels, h.VOC_sampling_rate, h.hop_size, h.win_size, h.fmin, h.fmax)
+    return mel
 
 
 def scan_checkpoint(cp_dir, prefix):
@@ -51,7 +65,7 @@ def inference(a):
             wav, sr = load_wav(os.path.join(a.input_wavs_dir, filname))
             wav = wav / MAX_WAV_VALUE
             wav = torch.FloatTensor(wav).to(device)
-            x = get_mel(wav.unsqueeze(0))
+            x = get_mel(wav.unsqueeze(0), sr)
             y_g_hat = generator(x)
             audio = y_g_hat.squeeze()
             audio = audio * MAX_WAV_VALUE
