@@ -21,6 +21,26 @@ import torchaudio
 
 torch.backends.cudnn.benchmark = True
 
+def pad_spectrogram(spec1, spec2):
+    # Source: https://github.com/jik876/hifi-gan/issues/52
+    if spec1.size(2) > spec2.size(2):
+        spec2 = torch.nn.functional.pad(spec2, (0, spec1.size(2) - spec2.size(2)), 'constant')
+    elif spec1.size(2) < spec2.size(2):
+        spec1 = torch.nn.functional.pad(spec1, (0, spec2.size(2) - spec1.size(2)), 'constant')
+    return spec1, spec2
+
+def pad_waveform(wav1, wav2):
+    print("TESTE C")
+    print(wav1.shape[1])
+    print(wav2.shape[1])
+    if wav1.size(2) > wav2.size(2):
+        wav2 = torch.nn.functional.pad(wav2, (0, wav1.size(2) - wav2.size(2)), 'constant')
+    elif wav1.size(2) < wav2.size(2):
+        wav1 = torch.nn.functional.pad(wav1, (0, wav2.size(2) - wav1.size(2)), 'constant')
+    return wav1, wav2
+
+
+
 
 def validation(generator, validation_loader, sw, h, steps, device, first=False):
     generator.eval()
@@ -35,12 +55,8 @@ def validation(generator, validation_loader, sw, h, steps, device, first=False):
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.VOC_sampling_rate,
                                             h.hop_size, h.win_size,
                                             h.fmin, h.fmax_for_loss)
-            # print(y_mel.shape, y_g_hat_mel.shape)
-            if y_g_hat_mel.size(2) > y_mel.size(2):
-                y_g_hat_mel = y_g_hat_mel[:, :, :y_mel.size(2)]
-            else:
-                y_mel = y_mel[:, :, :y_g_hat_mel.size(2)]
-
+            # FRED: upsampling
+            y_mel, y_g_hat_mel = pad_spectrogram(y_mel, y_g_hat_mel)
             val_err_tot += F.l1_loss(y_mel, y_g_hat_mel).item()
 
             if j <= 4:
@@ -184,8 +200,15 @@ def train(rank, a, h):
 
             # Generator
             optim_g.zero_grad()
+
+            # FRED: Padding mel-spectrograms
+            y_mel, y_g_hat_mel = pad_spectrogram(y_mel, y_g_hat_mel)
+
             # L1 Mel-Spectrogram Loss
             loss_mel = F.l1_loss(y_mel, y_g_hat_mel) * 45
+
+            # FRED
+            y, y_g_hat = pad_waveform(y, y_g_hat)
 
             y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
             y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = msd(y, y_g_hat)

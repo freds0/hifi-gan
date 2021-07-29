@@ -63,7 +63,7 @@ def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin,
     y = y.squeeze(1)
 
     spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=hann_window[str(y.device)],
-                      center=center, pad_mode='reflect', normalized=False, onesided=True)
+                      center=center, pad_mode='reflect', normalized=False, onesided=True, return_complex=False)
 
     spec = torch.sqrt(spec.pow(2).sum(-1)+(1e-9))
 
@@ -182,7 +182,7 @@ class MelDataset(torch.utils.data.Dataset):
                                   center=False)
                 # upsample TTS spec to vocoder
                 if self.use_interpolation:
-                    mel = torch.nn.functional.interpolate(mel.unsqueeze(0), scale_factor=(1, self.resample_factor), mode='bilinear', align_corners=True).squeeze(0)
+                    mel = torch.nn.functional.interpolate(mel.unsqueeze(0), scale_factor=(1, self.resample_factor), mode='bilinear', align_corners=True, recompute_scale_factor=True).squeeze(0)
 
             else:
                 mel = mel_spectrogram(audio, self.n_fft, self.num_mels,
@@ -202,7 +202,7 @@ class MelDataset(torch.utils.data.Dataset):
 
             # upsample TTS spec to vocoder
             if self.use_interpolation:
-                mel = torch.nn.functional.interpolate(mel.unsqueeze(0), scale_factor=(1, self.resample_factor), mode='bilinear', align_corners=True).squeeze(0)
+                mel = torch.nn.functional.interpolate(mel.unsqueeze(0), scale_factor=(1, self.resample_factor), mode='bilinear', align_corners=True, recompute_scale_factor=True).squeeze(0)
 
             if self.split:
                 frames_per_seg = math.ceil(self.segment_size / self.hop_size)
