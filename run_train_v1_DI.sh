@@ -1,1 +1,0 @@
-CUDA_VISIBLE_DEVICES=7 python train.py --input_wavs_dir ../../../danielt/datasets/  --input_training_file ../../../danielt/datasets/train_hifi-dirceu-44khz-clean.txt   --input_validation_file ../../../danielt/datasets/val_hifi-dirceu-44khz-clean.txt --config config_v1.json   --checkpoint_path ../checkpoints/HiFi-GAN-upsample-interpolation/v1/DI-TL-VCTK/

@@ -112,11 +112,11 @@ class MelDataset(torch.utils.data.Dataset):
         self.base_mels_path = base_mels_path
         self.use_interpolation = use_interpolation
         self.audio_resample = torchaudio.transforms.Resample(orig_freq=self.sampling_rate, new_freq=self.TTS_sampling_rate, resampling_method='sinc_interpolation')
-        self.resample_factor = self.sampling_rate/self.TTS_sampling_rate
+        self.resample_factor = float(self.sampling_rate)/float(self.TTS_sampling_rate)
 
     def __getitem__(self, index):
         filename = self.audio_files[index]
-        
+
         if self._cache_ref_count == 0:
             try:
                 audio, sampling_rate = load_wav(filename)
@@ -198,27 +198,25 @@ class MelDataset(torch.utils.data.Dataset):
             if len(mel.shape) < 3:
                 mel = mel.unsqueeze(0)
 
-	
-
             # upsample TTS spec to vocoder
             if self.use_interpolation:
                 mel = torch.nn.functional.interpolate(mel.unsqueeze(0), scale_factor=(1, self.resample_factor), mode='bilinear', align_corners=True, recompute_scale_factor=True).squeeze(0)
 
             if self.split:
                 frames_per_seg = math.ceil(self.segment_size / self.hop_size)
-                # print(audio.shape, mel.shape)
+
                 if audio.size(1) >= self.segment_size:
                     mel_start = random.randint(0, mel.size(2) - frames_per_seg - 5)
                     mel = mel[:, :, mel_start:mel_start + frames_per_seg]
                     audio = audio[:, mel_start * self.hop_size:(mel_start + frames_per_seg) * self.hop_size]
-                else:
-                    mel = torch.nn.functional.pad(mel, (0, frames_per_seg - mel.size(2)), 'constant')
-                    audio = torch.nn.functional.pad(audio, (0, self.segment_size - audio.size(1)), 'constant')
+
+                mel = torch.nn.functional.pad(mel, (0, frames_per_seg - mel.size(2)), 'constant')
+                audio = torch.nn.functional.pad(audio, (0, self.segment_size - audio.size(1)), 'constant')
 
         mel_loss = mel_spectrogram(audio, self.n_fft, self.num_mels,
                                    self.sampling_rate, self.hop_size, self.win_size, self.fmin, self.fmax_loss,
                                    center=False)
-        # print(mel.shape, mel_loss.shape)
+
         return (mel.squeeze(), audio.squeeze(0), filename, mel_loss.squeeze())
 
     def __len__(self):

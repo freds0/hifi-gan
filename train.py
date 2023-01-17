@@ -21,6 +21,7 @@ import torchaudio
 
 torch.backends.cudnn.benchmark = True
 
+
 def pad_spectrogram(spec1, spec2):
     # Source: https://github.com/jik876/hifi-gan/issues/52
     if spec1.size(2) > spec2.size(2):
@@ -29,17 +30,13 @@ def pad_spectrogram(spec1, spec2):
         spec1 = torch.nn.functional.pad(spec1, (0, spec2.size(2) - spec1.size(2)), 'constant')
     return spec1, spec2
 
+
 def pad_waveform(wav1, wav2):
-    print("TESTE C")
-    print(wav1.shape[1])
-    print(wav2.shape[1])
     if wav1.size(2) > wav2.size(2):
         wav2 = torch.nn.functional.pad(wav2, (0, wav1.size(2) - wav2.size(2)), 'constant')
     elif wav1.size(2) < wav2.size(2):
         wav1 = torch.nn.functional.pad(wav1, (0, wav2.size(2) - wav1.size(2)), 'constant')
     return wav1, wav2
-
-
 
 
 def validation(generator, validation_loader, sw, h, steps, device, first=False):
@@ -49,7 +46,7 @@ def validation(generator, validation_loader, sw, h, steps, device, first=False):
     with torch.no_grad():
         for j, batch in enumerate(validation_loader):
             x, y, _, y_mel = batch
-            
+
             y_g_hat = generator(x.to(device))
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.VOC_sampling_rate,
@@ -160,7 +157,7 @@ def train(rank, a, h):
     generator.train()
     mpd.train()
     msd.train()
-    
+
     for epoch in range(max(0, last_epoch), a.training_epochs):
         if rank == 0:
             start = time.time()
@@ -168,8 +165,7 @@ def train(rank, a, h):
 
         if h.num_gpus > 1:
             train_sampler.set_epoch(epoch)
-        
-        
+
         for i, batch in enumerate(train_loader):
             if rank == 0:
                 start_b = time.time()
@@ -236,7 +232,7 @@ def train(rank, a, h):
                     save_checkpoint(checkpoint_path,
                                     {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict()})
                     checkpoint_path = "{}/do_{:08d}".format(a.checkpoint_path, steps)
-                    save_checkpoint(checkpoint_path, 
+                    save_checkpoint(checkpoint_path,
                                     {'mpd': (mpd.module if h.num_gpus > 1
                                                          else mpd).state_dict(),
                                      'msd': (msd.module if h.num_gpus > 1
@@ -251,15 +247,15 @@ def train(rank, a, h):
 
                 # Validation
                 if steps % a.validation_interval == 0:  # and steps != 0:
-                    
+
                     validation(generator, validation_loader, sw, h, steps, device)
                     generator.train()
-                    
+
             steps += 1
 
         scheduler_g.step()
         scheduler_d.step()
-        
+
         if rank == 0:
             print('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))
 

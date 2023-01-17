@@ -89,11 +89,16 @@ class Generator(torch.nn.Module):
         self.conv_pre = weight_norm(Conv1d(80, h.upsample_initial_channel, 7, 1, padding=3))
         resblock = ResBlock1 if h.resblock == '1' else ResBlock2
 
+        # Update source  https://github.com/jik876/hifi-gan/issues/12
+        self.upsample_rates = h.upsample_rates
+
         self.ups = nn.ModuleList()
+
         for i, (u, k) in enumerate(zip(h.upsample_rates, h.upsample_kernel_sizes)):
             self.ups.append(weight_norm(
-                ConvTranspose1d(h.upsample_initial_channel//(2**i), h.upsample_initial_channel//(2**(i+1)),
-                                k, u, padding=(k-u)//2)))
+                ConvTranspose1d(h.upsample_initial_channel // (2 ** i),
+                                                        h.upsample_initial_channel // (2 ** (i + 1)),
+                                                        k, u, padding=(u // 2 + u % 2), output_padding=u % 2)))
 
         self.resblocks = nn.ModuleList()
         for i in range(len(self.ups)):
@@ -108,8 +113,12 @@ class Generator(torch.nn.Module):
     def forward(self, x):
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
-            x = F.leaky_relu(x, LRELU_SLOPE)
-            x = self.ups[i](x)
+            # Update source https://github.com/jik876/hifi-gan/issues/12
+            #x = F.leaky_relu(x, LRELU_SLOPE)
+            #x = self.ups[i](x)
+            x1 = F.leaky_relu(x, LRELU_SLOPE)
+            x = self.ups[i](x1)[:, :, :x1.size(-1) * self.upsample_rates[i]]
+
             xs = None
             for j in range(self.num_kernels):
                 if xs is None:
